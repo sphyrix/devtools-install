@@ -1,41 +1,82 @@
 #!/usr/bin/env bash
-# devtools host wrapper — runs devtools commands inside the public Docker image.
-# Installed to PATH as `devtools` via install.sh (or the project init.sh bootstrap).
+# devtools host wrapper — runs devtools commands inside the Docker container.
+# Install to PATH via scripts/install.sh or the project init.sh bootstrap.
 #
-# The devtools binary is a containerized toolkit: it ships with bundled `just`
-# recipes (/opt/devtools/justfiles) and expects to run inside its image, so this
-# wrapper invokes it via `docker run` rather than executing a bare host binary.
+# CANONICAL COPY. github.com/sphyrix/devtools-install/devtools.sh must be kept byte-identical —
+# RELEASE RULE: every devtools release bumps DEFAULT_IMAGE's tag here AND syncs the file to
+# devtools-install in the same change. The pin is the version contract: an immutable version tag
+# means no label-checking, no per-invocation pulls, and offline runs Just Work once the image is
+# cached.
 set -euo pipefail
 
-# Pinned image version. The wrapper re-pulls when the local image's
-# org.opencontainers.image.version label does not match this value.
-DEVTOOLS_VERSION="${DEVTOOLS_VERSION:-v0.3.6}"
+DEFAULT_IMAGE="ghcr.io/sphyrix/devtools:v0.10.0"
 
-# Public image (repo source stays private; the image package is public).
-DEFAULT_IMAGE="ghcr.io/sphyrix/devtools:latest"
-
-# Resolve image: prefer .project.toml in cwd, fall back to default.
-IMAGE="${DEVTOOLS_IMAGE:-$DEFAULT_IMAGE}"
+# Resolve image, most specific wins: DEVTOOLS_IMAGE env > .project.toml [devtools] image > pin.
+IMAGE="$DEFAULT_IMAGE"
 if [ -f ".project.toml" ]; then
     _img=$(grep -E '^\s*image\s*=' .project.toml | head -1 | sed 's/.*=\s*"\(.*\)"/\1/' || true)
     [ -n "$_img" ] && IMAGE="$_img"
 fi
+IMAGE="${DEVTOOLS_IMAGE:-$IMAGE}"
 
-# Check if image is present and up to date.
+# Pinned tags are immutable, so pull only when absent. Floating tags (:latest, :main) are refreshed
+# best-effort — offline just uses the cached image instead of dying.
 if ! docker image inspect "$IMAGE" > /dev/null 2>&1; then
     echo "devtools image not found, pulling $IMAGE..." >&2
     docker pull "$IMAGE" >&2
 else
-    LOCAL_VERSION=$(docker inspect "$IMAGE" --format '{{index .Config.Labels "org.opencontainers.image.version"}}' 2>/dev/null || true)
-    if [ -n "$DEVTOOLS_VERSION" ] && [ "$LOCAL_VERSION" != "$DEVTOOLS_VERSION" ]; then
-        echo "devtools image out of date (${LOCAL_VERSION:-unknown} -> ${DEVTOOLS_VERSION}), pulling..." >&2
-        docker pull "$IMAGE" >&2
-    fi
+    case "$IMAGE" in
+        *:latest|*:main)
+            docker pull "$IMAGE" >&2 || echo "warning: could not refresh $IMAGE (offline?); using cached image" >&2
+            ;;
+    esac
 fi
 
+# A TTY is needed for interactive `devtools init`, but demanding one breaks every non-interactive
+# caller (CI, scripts, agents) — attach only if we have one.
+TTY_FLAGS=""
+if [ -t 0 ] && [ -t 1 ]; then
+    TTY_FLAGS="-it"
+fi
+
+# THE secrets interface (same contract as the generated proxy's _ensure): recipes read env vars
+# only; hand them over as a KEY=VALUE file. DEVTOOLS_ENV_FILE wins; a plain .env in the project
+# root is the default. With enough permissions and the right env file, anything CI does is
+# reproducible from a laptop: `DEVTOOLS_ENV_FILE=prod.env devtools run <target>`.
+ENV_ARGS=()
+ENV_FILE="${DEVTOOLS_ENV_FILE:-}"
+if [ -z "$ENV_FILE" ] && [ -f .env ]; then
+    ENV_FILE=".env"
+fi
+if [ -n "$ENV_FILE" ]; then
+    if [ ! -f "$ENV_FILE" ]; then
+        echo "Error: DEVTOOLS_ENV_FILE=$ENV_FILE does not exist" >&2
+        exit 1
+    fi
+    ENV_ARGS+=(--env-file "$ENV_FILE")
+fi
+
+# Pass through docker-target inputs (same list as the proxy's _ensure) so docker recipes derive
+# image paths identically in both entry paths.
+for var in GITHUB_REPOSITORY DOCKER_IMAGE IMAGE_TAG DOCKER_BUILD_ARGS; do
+    if [ -n "${!var:-}" ]; then
+        ENV_ARGS+=(-e "${var}=${!var}")
+    fi
+done
+
+# Mount the host Docker socket (when present) so docker addon targets work from here too.
+MOUNT_ARGS=()
+if [ -S /var/run/docker.sock ]; then
+    MOUNT_ARGS+=(-v /var/run/docker.sock:/var/run/docker.sock)
+fi
+
+# ${arr[@]+...} guards: empty-array expansion under `set -u` is an "unbound variable" error on
+# bash 3.2 (macOS default) — the guard expands to nothing there instead.
 exec docker run --rm \
-    -it \
+    $TTY_FLAGS \
     -v "$(pwd):/project" \
     -w /project \
+    ${MOUNT_ARGS[@]+"${MOUNT_ARGS[@]}"} \
+    ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} \
     "$IMAGE" \
     "$@"
