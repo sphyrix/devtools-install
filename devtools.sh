@@ -9,7 +9,7 @@
 # cached.
 set -euo pipefail
 
-DEFAULT_IMAGE="ghcr.io/sphyrix/devtools:v0.10.0"
+DEFAULT_IMAGE="ghcr.io/sphyrix/devtools:0.12.0"
 
 # Resolve image, most specific wins: DEVTOOLS_IMAGE env > .project.toml [devtools] image > pin.
 IMAGE="$DEFAULT_IMAGE"
@@ -57,8 +57,10 @@ if [ -n "$ENV_FILE" ]; then
 fi
 
 # Pass through docker-target inputs (same list as the proxy's _ensure) so docker recipes derive
-# image paths identically in both entry paths.
-for var in GITHUB_REPOSITORY DOCKER_IMAGE IMAGE_TAG DOCKER_BUILD_ARGS; do
+# image paths identically in both entry paths. DOCKER_BUILD_CONTEXT/DOCKERFILE point the docker
+# addon at a Dockerfile that isn't the project root's (a build context, NOT docker's own reserved
+# DOCKER_CONTEXT daemon selector — see justfiles/addons/docker.just).
+for var in GITHUB_REPOSITORY DOCKER_IMAGE IMAGE_TAG DOCKER_BUILD_ARGS DOCKER_BUILD_CONTEXT DOCKERFILE; do
     if [ -n "${!var:-}" ]; then
         ENV_ARGS+=(-e "${var}=${!var}")
     fi
