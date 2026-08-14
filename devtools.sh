@@ -9,7 +9,7 @@
 # cached.
 set -euo pipefail
 
-DEFAULT_IMAGE="ghcr.io/sphyrix/devtools:0.12.0"
+DEFAULT_IMAGE="ghcr.io/sphyrix/devtools:0.13.0@sha256:acb23b3d69c5f7495ffa2d2fe7c774adef40cb29f59fee65ceaf7a412db967bd"
 
 # Resolve image, most specific wins: DEVTOOLS_IMAGE env > .project.toml [devtools] image > pin.
 IMAGE="$DEFAULT_IMAGE"
@@ -18,6 +18,28 @@ if [ -f ".project.toml" ]; then
     [ -n "$_img" ] && IMAGE="$_img"
 fi
 IMAGE="${DEVTOOLS_IMAGE:-$IMAGE}"
+
+# Kernel-TUN device/cap flags — ADR 001 addendum §5.5. Added only for `run <target>`
+# invocations where <target> (the argument right after `run`) is listed in
+# .project.toml's [tailnet].targets; every other invocation, and every non-tailnet
+# target, is unchanged. Crude by design, matching this script's existing .project.toml
+# parsing: a single-line, double-quoted `targets = [...]` array only (neither a
+# multi-line array nor single-quoted TOML strings are recognised — document targets
+# with double quotes on one line), and invocations that put global flags before `run`
+# are out of scope — this script does not parse its own argument list.
+TAILNET_FLAGS=()
+if [ -f ".project.toml" ] && [ "${1:-}" = "run" ] && [ -n "${2:-}" ]; then
+    _tn_target="$2"
+    _tn_line=$(sed -n '/^\[tailnet\]/,/^\[/p' .project.toml | grep -E '^\s*targets\s*=' | head -1 || true)
+    if [ -n "$_tn_line" ]; then
+        while IFS= read -r _tn_t; do
+            if [ "$_tn_t" = "$_tn_target" ]; then
+                TAILNET_FLAGS=(--device /dev/net/tun --cap-add NET_ADMIN)
+                break
+            fi
+        done < <(echo "$_tn_line" | grep -oE '"[^"]*"' | tr -d '"')
+    fi
+fi
 
 # Pinned tags are immutable, so pull only when absent. Floating tags (:latest, :main) are refreshed
 # best-effort — offline just uses the cached image instead of dying.
@@ -80,5 +102,6 @@ exec docker run --rm \
     -w /project \
     ${MOUNT_ARGS[@]+"${MOUNT_ARGS[@]}"} \
     ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} \
+    ${TAILNET_FLAGS[@]+"${TAILNET_FLAGS[@]}"} \
     "$IMAGE" \
     "$@"
