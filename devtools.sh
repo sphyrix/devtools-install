@@ -19,6 +19,15 @@ if [ -f ".project.toml" ]; then
 fi
 IMAGE="${DEVTOOLS_IMAGE:-$IMAGE}"
 
+TAILNET_KEY_ENV=""
+if [ "${1:-}" = "tailnet-key" ]; then
+    if [ "$#" -ne 2 ]; then
+        echo "usage: devtools tailnet-key <env>" >&2
+        exit 1
+    fi
+    TAILNET_KEY_ENV="$2"
+fi
+
 # Kernel-TUN device/cap flags — ADR 001 addendum §5.5. Added only for `run <target>`
 # invocations where <target> (the argument right after `run`) is listed in
 # .project.toml's [tailnet].targets; every other invocation, and every non-tailnet
@@ -65,16 +74,21 @@ fi
 # only; hand them over as a KEY=VALUE file. DEVTOOLS_ENV_FILE wins; a plain .env in the project
 # root is the default. With enough permissions and the right env file, anything CI does is
 # reproducible from a laptop: `DEVTOOLS_ENV_FILE=prod.env devtools run <target>`.
-ENV_ARGS=()
 ENV_FILE="${DEVTOOLS_ENV_FILE:-}"
 if [ -z "$ENV_FILE" ] && [ -f .env ]; then
     ENV_FILE=".env"
 fi
+if [ -n "$ENV_FILE" ] && [ ! -f "$ENV_FILE" ]; then
+    echo "Error: DEVTOOLS_ENV_FILE=$ENV_FILE does not exist" >&2
+    exit 1
+fi
+if [ -n "$TAILNET_KEY_ENV" ] && [ -z "$ENV_FILE" ]; then
+    echo "Error: devtools tailnet-key needs DEVTOOLS_ENV_FILE or a project .env file" >&2
+    exit 1
+fi
+
+ENV_ARGS=()
 if [ -n "$ENV_FILE" ]; then
-    if [ ! -f "$ENV_FILE" ]; then
-        echo "Error: DEVTOOLS_ENV_FILE=$ENV_FILE does not exist" >&2
-        exit 1
-    fi
     ENV_ARGS+=(--env-file "$ENV_FILE")
 fi
 
@@ -96,12 +110,81 @@ fi
 
 # ${arr[@]+...} guards: empty-array expansion under `set -u` is an "unbound variable" error on
 # bash 3.2 (macOS default) — the guard expands to nothing there instead.
-exec docker run --rm \
+if [ -z "$TAILNET_KEY_ENV" ]; then
+    exec docker run --rm \
+        $TTY_FLAGS \
+        -v "$(pwd):/project" \
+        -w /project \
+        ${MOUNT_ARGS[@]+"${MOUNT_ARGS[@]}"} \
+        ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} \
+        ${TAILNET_FLAGS[@]+"${TAILNET_FLAGS[@]}"} \
+        "$IMAGE" \
+        "$@"
+fi
+
+resolve_file() {
+    local path="$1" link
+    case "$path" in
+        /*) ;;
+        *) path="$(pwd)/$path" ;;
+    esac
+    while [ -L "$path" ]; do
+        link="$(readlink "$path")"
+        case "$link" in
+            /*) path="$link" ;;
+            *) path="$(dirname "$path")/$link" ;;
+        esac
+    done
+    printf '%s/%s\n' "$(cd "$(dirname "$path")" && pwd -P)" "$(basename "$path")"
+}
+
+ENV_REAL="$(resolve_file "$ENV_FILE")"
+if ENV_MODE="$(stat -c '%a' "$ENV_REAL" 2>/dev/null)"; then
+    :
+else
+    ENV_MODE="$(stat -f '%Lp' "$ENV_REAL")"
+fi
+
+STAGE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/devtools-tailnet-key.XXXXXX")"
+COMMIT_FILE=""
+cleanup_tailnet_key() {
+    [ -z "$COMMIT_FILE" ] || rm -f "$COMMIT_FILE"
+    rm -rf "$STAGE_DIR"
+}
+trap cleanup_tailnet_key EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+chmod 700 "$STAGE_DIR"
+cp "$ENV_REAL" "$STAGE_DIR/env"
+chmod 600 "$STAGE_DIR/env"
+
+TAILNET_ENV_ARGS=(--env-file "$STAGE_DIR/env")
+for var in GITHUB_REPOSITORY DOCKER_IMAGE IMAGE_TAG DOCKER_BUILD_ARGS DOCKER_BUILD_CONTEXT DOCKERFILE; do
+    if [ -n "${!var:-}" ]; then
+        TAILNET_ENV_ARGS+=(-e "${var}=${!var}")
+    fi
+done
+
+set +e
+docker run --rm \
     $TTY_FLAGS \
     -v "$(pwd):/project" \
+    -v "$STAGE_DIR:/run/devtools-host" \
     -w /project \
     ${MOUNT_ARGS[@]+"${MOUNT_ARGS[@]}"} \
-    ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} \
-    ${TAILNET_FLAGS[@]+"${TAILNET_FLAGS[@]}"} \
+    ${TAILNET_ENV_ARGS[@]+"${TAILNET_ENV_ARGS[@]}"} \
     "$IMAGE" \
-    "$@"
+    run tailnet-key "$TAILNET_KEY_ENV" -- --env-file /run/devtools-host/env
+rc=$?
+set -e
+if [ "$rc" -ne 0 ]; then
+    exit "$rc"
+fi
+
+ENV_DIR="$(dirname "$ENV_REAL")"
+COMMIT_FILE="$(mktemp "$ENV_DIR/.devtools-tailnet-key.XXXXXX")"
+cp "$STAGE_DIR/env" "$COMMIT_FILE"
+chmod "$ENV_MODE" "$COMMIT_FILE"
+mv -f "$COMMIT_FILE" "$ENV_REAL"
+COMMIT_FILE=""
+echo "Updated $ENV_FILE with a fresh TS_AUTHKEY."

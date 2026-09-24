@@ -8,10 +8,22 @@ credentials.
 
 ## Install
 
-Install the `devtools` host wrapper to `~/.local/bin/devtools`:
+Install DX to `~/.local/bin/devtools` with one command:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/sphyrix/devtools-install/main/install.sh | bash
+```
+
+The installer verifies that Docker is installed and running. If Docker is missing, it asks before
+installing it; declining exits without installing DX so Docker can be installed manually. Linux,
+macOS, and Windows Git Bash/MSYS are detected automatically. WSL users are directed to Docker
+Desktop's WSL integration.
+
+For unattended installation, make the dependency decision explicit:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sphyrix/devtools-install/main/install.sh \
+  | DEVTOOLS_INSTALL_DOCKER=yes bash
 ```
 
 Then run:
@@ -63,9 +75,9 @@ is reproducible locally given the right env.
 
 ## Requirements
 
-- **Docker** — the toolkit runs inside a container. `init.sh` will attempt to
-  install it (apt/pacman/brew); `install.sh` only warns if it is missing.
-- **bash 4+** for `init.sh` (macOS ships bash 3; `brew install bash`).
+- **Docker** is the only DX runtime dependency; the installer can install it with confirmation.
+- **curl** and **Bash** are needed only to run the installation command.
+- **Bash 4+** is required by the separate interactive `init.sh` project bootstrap.
 
 ## Configuration
 
@@ -76,6 +88,7 @@ Environment variables honoured by the scripts and wrapper:
 | `DEVTOOLS_IMAGE` | (the pinned release tag) | Override the container image — strongest override. |
 | `DEVTOOLS_ENV_FILE` | `.env` if present | KEY=VALUE file passed into the container as env (the secrets interface). |
 | `DEVTOOLS_INSTALL_DIR` | `$HOME/.local/bin` | Where the wrapper is installed. |
+| `DEVTOOLS_INSTALL_DOCKER` | `ask` | Docker decision: `ask`, `yes`, or `no`; use `yes` for unattended installs. |
 | `DEVTOOLS_RAW_BASE` | `https://raw.githubusercontent.com/sphyrix/devtools-install/main` | Base URL for the wrapper download (test branches/forks). |
 
 Image resolution order: `DEVTOOLS_IMAGE` env → `.project.toml` `[devtools] image`
