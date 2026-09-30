@@ -9,7 +9,7 @@
 # cached.
 set -euo pipefail
 
-DEFAULT_IMAGE="ghcr.io/sphyrix/devtools:0.13.0@sha256:acb23b3d69c5f7495ffa2d2fe7c774adef40cb29f59fee65ceaf7a412db967bd"
+DEFAULT_IMAGE="ghcr.io/sphyrix/devtools:0.26.0@sha256:314643d4117cd13d77a36ee643803eddc7de8be27f30b68bfd3b8ef7f65d0619"
 
 # Resolve image, most specific wins: DEVTOOLS_IMAGE env > .project.toml [devtools] image > pin.
 IMAGE="$DEFAULT_IMAGE"
